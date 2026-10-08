@@ -16,6 +16,8 @@ from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
+from new_bid_notifier import config
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env', override=False)
@@ -45,6 +47,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'monitors.apps.MonitorsConfig',
+    'monitors',
 ]
 
 MIDDLEWARE = [
@@ -87,8 +90,32 @@ DATABASES = {
     }
 }
 
-
-
+DATABASES = {
+    "default": {
+        "ENGINE": config("DB_ENGINE"),
+        "NAME": config("DB_NAME"),
+        "USER": config("DB_USER"),
+        "PASSWORD": config("DB_PASSWORD"),
+        "HOST": config("DB_HOST"),
+        "PORT": config("DB_PORT"),
+    },
+    "brk_db": {
+        "ENGINE": config("BRK_DB_ENGINE"),
+        "NAME": config("BRK_DB_NAME"),
+        "USER": config("BRK_DB_USER"),
+        "PASSWORD": config("BRK_DB_PASSWORD"),
+        "HOST": config("BRK_DB_HOST"),
+        "PORT": config("BRK_DB_PORT"),
+    },
+    "smi": {
+        "ENGINE": config("SMI_DB_ENGINE"),
+        "NAME": config("SMI_DB_NAME"),
+        "USER": config("SMI_DB_USER"),
+        "PASSWORD": config("SMI_DB_PASSWORD"),
+        "HOST": config("SMI_DB_HOST"),
+        "PORT": config("SMI_DB_PORT"),
+    },
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators

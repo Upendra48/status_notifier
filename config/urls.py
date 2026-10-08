@@ -17,9 +17,9 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
-from monitors.views import daily_report
+from monitors.views import DailyReportView
 
 urlpatterns = [
-    path('', daily_report, name='daily_report'),
+    path('', DailyReportView.as_view(), name='daily_report'),
     path('admin/', admin.site.urls),
 ]

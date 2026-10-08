@@ -1,25 +1,9 @@
-# Development Notes
+# Bid Monitor
 
-## Django primary-key warning (models.W042)
-
-Django creates an `id` primary key when a model does not declare one. Warning
-W042 means the active app configuration would use the older 32-bit
-`AutoField`. Set `DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'` in
-settings, or set `default_auto_field = 'django.db.models.BigAutoField'` on an
-app's `AppConfig`, to use 64-bit IDs by default.
-
-This project already sets `DEFAULT_AUTO_FIELD` to `BigAutoField`, and its
-initial migration uses `BigAutoField` for the monitor models. The project-local
-`python manage.py check` currently reports no issues. If changing an existing
-project from `AutoField`, review and apply the migration Django generates; do
-not edit an already-applied migration by hand.
-
-Verify with:
-
-```powershell
-python manage.py check
-python manage.py makemigrations --check --dry-run
-```
+Bid Monitor checks agency procurement pages, stores a daily result, and
+provides a dashboard at `/`. The existing `bids` table is the read-only source
+of agency URLs and spider health; check results and daily history are stored
+separately.
 
 ## Database connections
 
@@ -92,7 +76,7 @@ Keep `.env` out of version control and never put database passwords in source
 files. A local XAMPP database is only accessible to processes on that machine;
 Render deployments need their own reachable hosted database configuration.
 
-### Monitor report categories
+### Report categories
 
 The daily report at `/` displays the decision-table results without sending
 email or other notifications:

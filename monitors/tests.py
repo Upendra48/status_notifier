@@ -392,7 +392,7 @@ class CheckAgenciesCommandTests(TestCase):
 	@patch('monitors.management.commands.check_agencies.update_bid_status')
 	@patch('monitors.management.commands.check_agencies.load_bids')
 	@patch('monitors.management.commands.check_agencies.check_agency')
-	def test_command_reuses_todays_run_and_reports_summary(
+	def test_command_creates_a_separate_run_each_time_and_reports_summary(
 		self,
 		check_agency_mock,
 		load_bids_mock,
@@ -405,12 +405,19 @@ class CheckAgenciesCommandTests(TestCase):
 
 		out = io.StringIO()
 		call_command('check_agencies', stdout=out)
-		first_run_id = MonitorRun.objects.get().id
+		first_run = MonitorRun.objects.get()
 		call_command('check_agencies', stdout=out)
 
-		self.assertEqual(MonitorRun.objects.count(), 1)
-		self.assertEqual(MonitorRun.objects.get().id, first_run_id)
-		self.assertEqual(MonitorRun.objects.get().checks.count(), 1)
+		runs = list(MonitorRun.objects.order_by('started_at', 'id'))
+		self.assertEqual(len(runs), 2)
+		self.assertNotEqual(runs[0].id, runs[1].id)
+		self.assertEqual(runs[0].id, first_run.id)
+		for run in runs:
+			self.assertEqual(run.run_date, timezone.localdate())
+			self.assertEqual(run.total_agencies, 1)
+			self.assertEqual(run.no_bid_agencies, 1)
+			self.assertIsNotNone(run.completed_at)
+			self.assertEqual(run.checks.count(), 1)
 		self.assertIn('Checked 1, Active 0, No bid 1, Unknown 0, Errors 0', out.getvalue())
 		self.assertIn(
 			'[1/1] no-bids.example: NO_BID (no_bids_phrase)',
@@ -581,10 +588,13 @@ class DailyReportViewTests(TestCase):
 			[check.agency.agency_name for check in response.context['logged_checks']],
 			['Healthy Active', 'Healthy Error'],
 		)
-		self.assertContains(response, 'Active bids on broken spiders (2)')
-		self.assertContains(response, 'Broken spiders needing review (1)')
-		self.assertContains(response, 'No-bid sites (1)')
-		self.assertContains(response, 'Logged only (2)')
+		self.assertContains(response, 'id="page-title">Bid site monitoring')
+		self.assertContains(response, 'Active bids on broken spiders')
+		self.assertContains(response, '<span class="section-count">2</span>')
+		self.assertContains(response, 'Broken spiders needing review')
+		self.assertContains(response, 'No-bid sites')
+		self.assertContains(response, 'Logged only')
+		self.assertContains(response, 'aria-label="Refresh daily report"')
 
 	def test_daily_report_shows_empty_state_without_todays_run(self):
 		self.run.delete()

@@ -108,11 +108,12 @@ class Command(BaseCommand):
 	def handle(self, *args, **options):
 		bids = load_bids()
 		today = timezone.localdate()
-		run, _ = MonitorRun.objects.get_or_create(
-			run_date=today,
-			defaults={'started_at': timezone.now()},
-		)
 		total = len(bids)
+		run = MonitorRun.objects.create(
+			run_date=today,
+			started_at=timezone.now(),
+			total_agencies=total,
+		)
 
 		for index, bid in enumerate(bids, start=1):
 			agency = get_or_create_bid_agency(bid)

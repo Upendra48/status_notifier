@@ -74,7 +74,7 @@ class AgencyMonitor(models.Model):
 
 
 class MonitorRun(models.Model):
-	run_date = models.DateField(unique=True)
+	run_date = models.DateField()
 	started_at = models.DateTimeField()
 	completed_at = models.DateTimeField(null=True, blank=True)
 

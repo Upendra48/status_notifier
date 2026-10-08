@@ -1,76 +1,122 @@
-import json
-from pathlib import Path
-from urllib.parse import urlparse
+from datetime import datetime
+from typing import TypedDict
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db import DEFAULT_DB_ALIAS, transaction
 from django.utils import timezone
-from django.utils.text import slugify
 
-from monitors.models import AgencyMonitor, BidStatus, MonitorRun
+from monitors.models import (
+	AgencyMonitor,
+	BidSource,
+	BidStatus,
+	BidStatusRecord,
+	MonitorRun,
+)
 from monitors.services.monitor import CheckResult, check_agency, save_check_result
 
 
-SITE_LIST_PATH = Path(__file__).resolve().parents[2] / 'site.json'
 CONTAINER_SELECTOR = 'div.bidItems.listItems'
 BID_SELECTOR = 'div.listItemsRow.bid'
 NO_BID_PHRASE = 'There are no open bid postings at this time.'
 
 
-def load_site_urls() -> list[str]:
-	try:
-		urls = json.loads(SITE_LIST_PATH.read_text(encoding='utf-8'))
-	except (OSError, json.JSONDecodeError) as exc:
-		raise CommandError(f'Could not load site list {SITE_LIST_PATH}: {exc}') from exc
-
-	if not isinstance(urls, list) or any(
-		not isinstance(url, str) or not url.strip()
-		for url in urls
-	):
-		raise CommandError(f'{SITE_LIST_PATH} must contain a JSON list of non-empty URLs.')
-	return urls
+class StatusUpdates(TypedDict):
+	spider_status: str
+	active_status: str
+	last_checked_at: datetime
+	last_error: str | None
 
 
-def get_or_create_site_agency(url: str) -> AgencyMonitor:
-	agency = AgencyMonitor.objects.filter(agency_url=url).first()
-	if agency is not None:
-		return agency
+def load_bids() -> list[BidSource]:
+	bids = list(
+		BidSource.objects.using(DEFAULT_DB_ALIAS).order_by('id')
+	)
+	seen_ecgains: set[str] = set()
+	for bid in bids:
+		if not bid.ecgains.strip():
+			raise CommandError(f'Bid {bid.pk} has an empty EC Gains identifier.')
+		normalized_ecgains = bid.ecgains.casefold()
+		if normalized_ecgains in seen_ecgains:
+			raise CommandError(
+				f'Duplicate EC Gains identifier {bid.ecgains!r} in the bids table.'
+			)
+		if not bid.agency_name.strip():
+			raise CommandError(f'Bid {bid.pk} has an empty agency name.')
+		if not bid.agency_url.strip():
+			raise CommandError(f'Bid {bid.pk} has an empty agency URL.')
+		seen_ecgains.add(normalized_ecgains)
+	return bids
 
-	host = urlparse(url).hostname
-	if not host:
-		raise ValueError(f'URL has no hostname: {url}')
 
-	identifier = slugify(urlparse(url).netloc + urlparse(url).path)[:50]
-	if not identifier:
-		raise ValueError(f'Could not create an agency identifier for URL: {url}')
+def get_or_create_bid_agency(bid: BidSource) -> AgencyMonitor:
+	agency, created = AgencyMonitor.objects.get_or_create(
+		ecgains=bid.ecgains,
+		defaults={
+			'agency_name': bid.agency_name,
+			'agency_url': bid.agency_url,
+			'container_selector': CONTAINER_SELECTOR,
+			'bid_selector': BID_SELECTOR,
+			'no_bid_phrase': NO_BID_PHRASE,
+			'broken': bid.broken,
+		},
+	)
+	if not created:
+		changed_fields = []
+		for field, value in (
+			('agency_name', bid.agency_name),
+			('agency_url', bid.agency_url),
+			('broken', bid.broken),
+		):
+			if getattr(agency, field) != value:
+				setattr(agency, field, value)
+				changed_fields.append(field)
+		if changed_fields:
+			agency.save(update_fields=(*changed_fields, 'updated_at'))
+	return agency
 
-	return AgencyMonitor.objects.create(
-		agency_name=host,
-		ecgains=identifier,
-		agency_url=url,
-		container_selector=CONTAINER_SELECTOR,
-		bid_selector=BID_SELECTOR,
-		no_bid_phrase=NO_BID_PHRASE,
+
+def get_status_updates(result: CheckResult) -> StatusUpdates:
+	successful = result.status in {BidStatus.ACTIVE, BidStatus.NO_BID}
+	return {
+		'spider_status': 'SUCCESS' if successful else 'ERROR',
+		'active_status': result.status,
+		'last_checked_at': timezone.now(),
+		'last_error': (
+			result.error or result.reason
+			if not successful
+			else None
+		),
+	}
+
+
+def update_bid_status(bid: BidSource, result: CheckResult) -> None:
+	updates = get_status_updates(result)
+	BidStatusRecord.objects.using(DEFAULT_DB_ALIAS).update_or_create(
+		bid_id=bid.pk,
+		defaults={
+			'spider_status': updates['spider_status'],
+			'active_status': updates['active_status'],
+			'last_checked_at': updates['last_checked_at'],
+			'last_error': updates['last_error'],
+		},
 	)
 
 
 class Command(BaseCommand):
-	help = 'Check the sites listed in monitors/site.json and record their results.'
+	help = 'Check the bids listed in the local bids table and record their results.'
 
 	def handle(self, *args, **options):
-		urls = load_site_urls()
+		bids = load_bids()
 		today = timezone.localdate()
 		run, _ = MonitorRun.objects.get_or_create(
 			run_date=today,
 			defaults={'started_at': timezone.now()},
 		)
-		notify_agencies = []
-		review_agencies = []
-		total = len(urls)
+		total = len(bids)
 
-		for index, url in enumerate(urls, start=1):
-			agency = None
+		for index, bid in enumerate(bids, start=1):
+			agency = get_or_create_bid_agency(bid)
 			try:
-				agency = get_or_create_site_agency(url)
 				result = check_agency(agency)
 			except Exception as exc:
 				error = str(exc) or exc.__class__.__name__
@@ -79,44 +125,18 @@ class Command(BaseCommand):
 					reason='check_failed',
 					error=error,
 				)
-				agency = AgencyMonitor.objects.filter(agency_url=url).first()
-				if agency is not None:
-					try:
-						save_check_result(run, agency, result)
-					except Exception as save_exc:
-						self.stderr.write(
-							f'[{index}/{total}] {url}: could not save error result: '
-							f'{save_exc}'
-						)
-				self.stderr.write(f'[{index}/{total}] {url}: {result.error}')
-			else:
-				try:
-					save_check_result(run, agency, result)
-				except Exception as exc:
-					result = CheckResult(
-						status=BidStatus.ERROR,
-						reason='save_failed',
-						container_found=result.container_found,
-						entries_found=result.entries_found,
-						dates_parsed=result.dates_parsed,
-						error=str(exc) or exc.__class__.__name__,
-						duration_ms=result.duration_ms,
-					)
-					self.stderr.write(
-						f'[{index}/{total}] {agency.agency_name}: '
-						f'could not save check result: {result.error}'
-					)
+				self.stderr.write(
+					f'[{index}/{total}] {agency.agency_name}: {result.error}'
+				)
 
-			name = agency.agency_name if agency is not None else url
+			with transaction.atomic(using=DEFAULT_DB_ALIAS):
+				save_check_result(run, agency, result)
+				update_bid_status(bid, result)
+
 			self.stdout.write(
-				f'[{index}/{total}] {name}: {result.status} ({result.reason})'
+				f'[{index}/{total}] {agency.agency_name}: '
+				f'{result.status} ({result.reason})'
 			)
-
-			if agency is not None and agency.broken:
-				if result.status == BidStatus.ACTIVE:
-					notify_agencies.append(agency)
-				elif result.status in {BidStatus.UNKNOWN, BidStatus.ERROR}:
-					review_agencies.append(agency)
 
 		run.total_agencies = total
 		run.active_agencies = run.checks.filter(
@@ -147,8 +167,4 @@ class Command(BaseCommand):
 				f'No bid {run.no_bid_agencies}, Unknown {run.unknown_agencies}, '
 				f'Errors {run.error_agencies}'
 			)
-		)
-		self.stdout.write(
-			f'Notify list: {len(notify_agencies)}; '
-			f'Review list: {len(review_agencies)}'
 		)

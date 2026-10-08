@@ -5,10 +5,21 @@ from unittest.mock import Mock, patch
 import requests
 from django.contrib import admin
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.db import connection
+from django.test import (
+	SimpleTestCase,
+	TestCase,
+	TransactionTestCase,
+)
 from django.utils import timezone
 
-from monitors.models import AgencyCheck, AgencyMonitor, MonitorRun
+from monitors.models import (
+	AgencyCheck,
+	AgencyMonitor,
+	BidSource,
+	BidStatusRecord,
+	MonitorRun,
+)
 from monitors.services.bid_detector import find_entries
 from monitors.services.container import find_container
 from monitors.services.fetcher import FetchResult, MAX_REDIRECTS, USER_AGENT, fetch_page
@@ -327,20 +338,29 @@ class SaveCheckResultTests(TestCase):
 
 
 class CheckAgenciesCommandTests(TestCase):
-	@patch(
-		'monitors.management.commands.check_agencies.load_site_urls',
-		return_value=[
-			'https://active.example/Bids.aspx',
-			'https://unknown.example/Bids.aspx',
-			'https://error.example/Bids.aspx',
-		],
-	)
+	def make_bid(self, bid_id, name, *, broken=True):
+		return SimpleNamespace(
+			pk=bid_id,
+			ecgains=name.lower(),
+			agency_name=name,
+			agency_url=f'https://{name}/Bids.aspx',
+			broken=broken,
+		)
+
+	@patch('monitors.management.commands.check_agencies.update_bid_status')
+	@patch('monitors.management.commands.check_agencies.load_bids')
 	@patch('monitors.management.commands.check_agencies.check_agency')
 	def test_command_saves_results_continues_after_failure_and_counts_statuses(
 		self,
 		check_agency_mock,
-		_load_urls,
+		load_bids_mock,
+		_update_bid_status,
 	):
+		load_bids_mock.return_value = [
+			self.make_bid(1, 'active.example'),
+			self.make_bid(2, 'unknown.example'),
+			self.make_bid(3, 'error.example'),
+		]
 		check_agency_mock.side_effect = [
 			CheckResult('ACTIVE', 'open_bid_found', True, 2),
 			CheckResult('UNKNOWN', 'container_missing'),
@@ -369,16 +389,18 @@ class CheckAgenciesCommandTests(TestCase):
 			'div.bidItems.listItems',
 		)
 
-	@patch(
-		'monitors.management.commands.check_agencies.load_site_urls',
-		return_value=['https://no-bids.example/Bids.aspx'],
-	)
+	@patch('monitors.management.commands.check_agencies.update_bid_status')
+	@patch('monitors.management.commands.check_agencies.load_bids')
 	@patch('monitors.management.commands.check_agencies.check_agency')
 	def test_command_reuses_todays_run_and_reports_summary(
 		self,
 		check_agency_mock,
-		_load_urls,
+		load_bids_mock,
+		_update_bid_status,
 	):
+		load_bids_mock.return_value = [
+			self.make_bid(1, 'no-bids.example', broken=False),
+		]
 		check_agency_mock.return_value = CheckResult('NO_BID', 'no_bids_phrase')
 
 		out = io.StringIO()
@@ -395,6 +417,94 @@ class CheckAgenciesCommandTests(TestCase):
 			out.getvalue(),
 		)
 
+	def test_status_mapping_updates_broken_and_status_fields(self):
+		from monitors.management.commands.check_agencies import get_status_updates
+
+		active_updates = get_status_updates(
+			CheckResult('ACTIVE', 'open_bid_found'),
+		)
+		error_updates = get_status_updates(
+			CheckResult('ERROR', 'fetch_failed', error='timeout'),
+		)
+
+		self.assertEqual(active_updates['spider_status'], 'SUCCESS')
+		self.assertEqual(active_updates['active_status'], 'ACTIVE')
+		self.assertIsNone(active_updates['last_error'])
+		self.assertEqual(error_updates['spider_status'], 'ERROR')
+		self.assertEqual(error_updates['active_status'], 'ERROR')
+		self.assertEqual(error_updates['last_error'], 'timeout')
+
+	def test_decision_table_matches_broken_spider_business_rule(self):
+		from monitors.services.report import get_report_category
+
+		cases = (
+			('ACTIVE', True, 'active'),
+			('ACTIVE', False, 'logged'),
+			('NO_BID', True, 'no_bid'),
+			('NO_BID', False, 'no_bid'),
+			('UNKNOWN', True, 'review'),
+			('UNKNOWN', False, 'logged'),
+			('ERROR', True, 'review'),
+			('ERROR', False, 'logged'),
+		)
+		for status, broken, expected in cases:
+			with self.subTest(status=status, broken=broken):
+				self.assertEqual(
+					get_report_category(status, broken),
+					expected,
+				)
+
+
+class SourceBidIntegrationTests(TransactionTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		with connection.schema_editor() as schema_editor:
+			schema_editor.create_model(BidSource)
+			schema_editor.create_model(BidStatusRecord)
+
+	@classmethod
+	def tearDownClass(cls):
+		with connection.schema_editor() as schema_editor:
+			schema_editor.delete_model(BidStatusRecord)
+			schema_editor.delete_model(BidSource)
+		super().tearDownClass()
+
+	@patch(
+		'monitors.management.commands.check_agencies.check_agency',
+		return_value=CheckResult('ACTIVE', 'open_bid_found', True, 2),
+	)
+	def test_command_never_changes_bids_and_updates_status_record(
+		self,
+		_check,
+	):
+		bid = BidSource.objects.create(
+			ecgains='integration-test',
+			agency_name='integration.example',
+			agency_url='https://integration.example/Bids.aspx',
+			broken=True,
+		)
+
+		call_command('check_agencies', verbosity=0)
+
+		bid.refresh_from_db()
+		status_record = BidStatusRecord.objects.get(bid_id=bid.pk)
+		check = AgencyCheck.objects.get(agency__ecgains=bid.ecgains)
+		self.assertEqual(
+			(bid.ecgains, bid.agency_name, bid.agency_url, bid.broken),
+			(
+				'integration-test',
+				'integration.example',
+				'https://integration.example/Bids.aspx',
+				True,
+			),
+		)
+		self.assertEqual(status_record.spider_status, 'SUCCESS')
+		self.assertEqual(status_record.active_status, 'ACTIVE')
+		self.assertIsNone(status_record.last_error)
+		self.assertTrue(check.broken_at_check)
+		self.assertEqual(check.status, 'ACTIVE')
+
 
 class DailyReportViewTests(TestCase):
 	def setUp(self):
@@ -407,7 +517,15 @@ class DailyReportViewTests(TestCase):
 			no_bid_agencies=1,
 		)
 
-	def add_check(self, name, url, status, entries_found=0, reason='test_reason'):
+	def add_check(
+		self,
+		name,
+		url,
+		status,
+		entries_found=0,
+		reason='test_reason',
+		broken=False,
+	):
 		agency = AgencyMonitor.objects.create(
 			agency_name=name,
 			ecgains=name.lower().replace(' ', '-'),
@@ -418,15 +536,29 @@ class DailyReportViewTests(TestCase):
 			run=self.run,
 			agency=agency,
 			status=status,
-			broken_at_check=False,
+			broken_at_check=broken,
 			entries_found=entries_found,
 			reason=reason,
 		)
 
 	def test_daily_report_groups_and_sorts_active_and_no_bid_sites(self):
-		self.add_check('Few Bids', 'https://few.example', 'ACTIVE', 2)
-		self.add_check('Most Bids', 'https://most.example', 'ACTIVE', 12)
+		self.add_check('Few Bids', 'https://few.example', 'ACTIVE', 2, broken=True)
+		self.add_check('Most Bids', 'https://most.example', 'ACTIVE', 12, broken=True)
+		self.add_check('Healthy Active', 'https://healthy.example', 'ACTIVE', 4)
 		self.add_check('No Bids', 'https://none.example', 'NO_BID', 0)
+		self.add_check(
+			'Broken Unknown',
+			'https://broken-unknown.example',
+			'UNKNOWN',
+			reason='container_missing',
+			broken=True,
+		)
+		self.add_check(
+			'Healthy Error',
+			'https://healthy-error.example',
+			'ERROR',
+			reason='timeout',
+		)
 
 		response = self.client.get('/')
 
@@ -438,11 +570,21 @@ class DailyReportViewTests(TestCase):
 			['Most Bids', 'Few Bids'],
 		)
 		self.assertEqual(
+			[check.agency.agency_name for check in response.context['review_checks']],
+			['Broken Unknown'],
+		)
+		self.assertEqual(
 			[check.agency.agency_name for check in response.context['no_bid_checks']],
 			['No Bids'],
 		)
-		self.assertContains(response, 'Active bids (2)')
+		self.assertEqual(
+			[check.agency.agency_name for check in response.context['logged_checks']],
+			['Healthy Active', 'Healthy Error'],
+		)
+		self.assertContains(response, 'Active bids on broken spiders (2)')
+		self.assertContains(response, 'Broken spiders needing review (1)')
 		self.assertContains(response, 'No-bid sites (1)')
+		self.assertContains(response, 'Logged only (2)')
 
 	def test_daily_report_shows_empty_state_without_todays_run(self):
 		self.run.delete()
@@ -452,7 +594,7 @@ class DailyReportViewTests(TestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertIsNone(response.context['run'])
 		self.assertContains(response, 'No monitoring run is recorded')
-		self.assertContains(response, 'No active bids reported today.')
+		self.assertContains(response, 'No broken spiders have active bids.')
 
 
 class FakeResponse:

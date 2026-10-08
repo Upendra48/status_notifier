@@ -16,8 +16,6 @@ from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
-from new_bid_notifier import config
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env', override=False)
@@ -47,7 +45,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'monitors.apps.MonitorsConfig',
-    'monitors',
 ]
 
 MIDDLEWARE = [
@@ -81,41 +78,54 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/6.1/ref/settings/#databases
+# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+        'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.mysql'),
+        'NAME': os.environ.get('DB_NAME', 'bid_status'),
+        'USER': os.environ.get('DB_USER', 'root'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '3306'),
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
+    },
 }
 
-DATABASES = {
-    "default": {
-        "ENGINE": config("DB_ENGINE"),
-        "NAME": config("DB_NAME"),
-        "USER": config("DB_USER"),
-        "PASSWORD": config("DB_PASSWORD"),
-        "HOST": config("DB_HOST"),
-        "PORT": config("DB_PORT"),
-    },
-    "brk_db": {
-        "ENGINE": config("BRK_DB_ENGINE"),
-        "NAME": config("BRK_DB_NAME"),
-        "USER": config("BRK_DB_USER"),
-        "PASSWORD": config("BRK_DB_PASSWORD"),
-        "HOST": config("BRK_DB_HOST"),
-        "PORT": config("BRK_DB_PORT"),
-    },
-    "smi": {
-        "ENGINE": config("SMI_DB_ENGINE"),
-        "NAME": config("SMI_DB_NAME"),
-        "USER": config("SMI_DB_USER"),
-        "PASSWORD": config("SMI_DB_PASSWORD"),
-        "HOST": config("SMI_DB_HOST"),
-        "PORT": config("SMI_DB_PORT"),
-    },
-}
+def configure_optional_mysql_database(alias: str, prefix: str) -> None:
+    keys = ('ENGINE', 'NAME', 'USER', 'PASSWORD', 'HOST', 'PORT')
+    names = {key: f'{prefix}_{key}' for key in keys}
+    configured = any(os.environ.get(name, '').strip() for name in names.values())
+    if not configured:
+        return
+
+    required = ('ENGINE', 'NAME', 'USER', 'HOST', 'PORT')
+    missing = [
+        names[key] for key in required
+        if not os.environ.get(names[key], '').strip()
+    ]
+    if missing:
+        raise ImproperlyConfigured(
+            f'Incomplete {alias} database configuration; missing: '
+            f'{", ".join(missing)}.'
+        )
+
+    DATABASES[alias] = {
+        'ENGINE': os.environ[names['ENGINE']],
+        'NAME': os.environ[names['NAME']],
+        'USER': os.environ[names['USER']],
+        'PASSWORD': os.environ.get(names['PASSWORD'], ''),
+        'HOST': os.environ[names['HOST']],
+        'PORT': os.environ[names['PORT']],
+        'OPTIONS': {'charset': 'utf8mb4'},
+    }
+
+
+configure_optional_mysql_database('brk_db', 'BRK_DB')
+configure_optional_mysql_database('smi', 'SMI_DB')
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -155,12 +165,3 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
-# Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
-
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}

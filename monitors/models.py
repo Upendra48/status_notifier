@@ -8,6 +8,41 @@ class BidStatus(models.TextChoices):
 	ERROR = 'ERROR', 'Error'
 
 
+class BidSource(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	ecgains = models.CharField(max_length=50)
+	agency_name = models.CharField(max_length=255)
+	agency_url = models.TextField()
+	broken = models.BooleanField(default=True)
+
+	class Meta:
+		managed = False
+		db_table = 'bids'
+
+
+class BidStatusRecord(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	bid_id = models.BigIntegerField(unique=True)
+	spider_status = models.CharField(max_length=20, default='UNKNOWN')
+	active_status = models.CharField(
+		max_length=20,
+		choices=BidStatus.choices,
+		default=BidStatus.UNKNOWN,
+	)
+	repair_requested = models.BooleanField(default=False)
+	repair_requested_at = models.DateTimeField(null=True, blank=True)
+	repair_completed = models.BooleanField(default=False)
+	repaired_at = models.DateTimeField(null=True, blank=True)
+	last_checked_at = models.DateTimeField(null=True, blank=True)
+	last_error = models.TextField(null=True, blank=True)
+	notes = models.TextField(null=True, blank=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		managed = False
+		db_table = 'bid_status'
+
+
 class AgencyMonitor(models.Model):
 	agency_name = models.CharField(max_length=255)
 	ecgains = models.CharField(max_length=50, unique=True)
@@ -48,10 +83,6 @@ class MonitorRun(models.Model):
 	no_bid_agencies = models.IntegerField(default=0)
 	unknown_agencies = models.IntegerField(default=0)
 	error_agencies = models.IntegerField(default=0)
-
-	notification_sent = models.BooleanField(default=False)
-	notification_sent_at = models.DateTimeField(null=True, blank=True)
-
 
 class AgencyCheck(models.Model):
 	run = models.ForeignKey(MonitorRun, on_delete=models.CASCADE, related_name='checks')

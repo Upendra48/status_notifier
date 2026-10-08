@@ -54,6 +54,4 @@ class MonitorRunAdmin(ReadOnlyModelAdmin):
 		'no_bid_agencies',
 		'unknown_agencies',
 		'error_agencies',
-		'notification_sent',
 	)
-	list_filter = ('notification_sent',)

@@ -48,22 +48,24 @@
 	</p>
 
 	<div class="summary" aria-label="Daily status totals">
-		<div class="metric"><strong>{{ active_count }}</strong><span>Active sites</span></div>
+		<div class="metric"><strong>{{ active_count }}</strong><span>Active bids on broken spiders</span></div>
 		<div class="metric"><strong>{{ no_bid_count }}</strong><span>No-bid sites</span></div>
-		<div class="metric"><strong>{{ review_count }}</strong><span>Needs review</span></div>
+		<div class="metric"><strong>{{ review_count }}</strong><span>Broken spiders needing review</span></div>
+		<div class="metric"><strong>{{ logged_count }}</strong><span>Logged only</span></div>
 		{% if run %}<div class="metric"><strong>{{ run.total_agencies }}</strong><span>Sites checked</span></div>{% endif %}
 	</div>
 
 	<section aria-labelledby="active-heading">
-		<h2 id="active-heading">Active bids ({{ active_count }})</h2>
+		<h2 id="active-heading">Active bids on broken spiders ({{ active_count }})</h2>
 		{% if active_checks %}
 			<div class="table-wrap">
 				<table>
-					<thead><tr><th>Site</th><th>Open entries</th><th>Result</th><th>Checked</th></tr></thead>
+					<thead><tr><th>Agency</th><th>EC Gains</th><th>Open entries</th><th>Result</th><th>Checked</th></tr></thead>
 					<tbody>
 					{% for check in active_checks %}
 						<tr>
 							<td><a href="{{ check.agency.agency_url }}">{{ check.agency.agency_name }}</a></td>
+							<td>{{ check.agency.ecgains }}</td>
 							<td>{{ check.entries_found }}</td>
 							<td><span class="status status-active">{{ check.get_status_display }}</span> <span class="muted">{{ check.reason }}</span></td>
 							<td>{{ check.checked_at|date:"g:i A" }}</td>
@@ -72,7 +74,7 @@
 					</tbody>
 				</table>
 			</div>
-		{% else %}<p class="empty">No active bids reported today.</p>{% endif %}
+		{% else %}<p class="empty">No broken spiders have active bids.</p>{% endif %}
 	</section>
 
 	<section aria-labelledby="no-bid-heading">
@@ -97,15 +99,16 @@
 	</section>
 
 	<section aria-labelledby="review-heading">
-		<h2 id="review-heading">Unknown or errors ({{ review_count }})</h2>
+		<h2 id="review-heading">Broken spiders needing review ({{ review_count }})</h2>
 		{% if review_checks %}
 			<div class="table-wrap">
 				<table>
-					<thead><tr><th>Site</th><th>Status</th><th>Reason / error</th><th>Checked</th></tr></thead>
+					<thead><tr><th>Agency</th><th>EC Gains</th><th>Status</th><th>Reason / error</th><th>Checked</th></tr></thead>
 					<tbody>
 					{% for check in review_checks %}
 						<tr>
 							<td><a href="{{ check.agency.agency_url }}">{{ check.agency.agency_name }}</a></td>
+							<td>{{ check.agency.ecgains }}</td>
 							<td><span class="status status-review">{{ check.get_status_display }}</span></td>
 							<td>{{ check.error|default:check.reason }}</td>
 							<td>{{ check.checked_at|date:"g:i A" }}</td>
@@ -114,7 +117,30 @@
 					</tbody>
 				</table>
 			</div>
-		{% else %}<p class="empty">No sites need review.</p>{% endif %}
+		{% else %}<p class="empty">No broken spiders need review.</p>{% endif %}
+	</section>
+
+	<section aria-labelledby="logged-heading">
+		<h2 id="logged-heading">Logged only ({{ logged_count }})</h2>
+		{% if logged_checks %}
+			<div class="table-wrap">
+				<table>
+					<thead><tr><th>Agency</th><th>EC Gains</th><th>Status</th><th>Reason / error</th><th>Spider broken</th><th>Checked</th></tr></thead>
+					<tbody>
+					{% for check in logged_checks %}
+						<tr>
+							<td><a href="{{ check.agency.agency_url }}">{{ check.agency.agency_name }}</a></td>
+							<td>{{ check.agency.ecgains }}</td>
+							<td>{{ check.get_status_display }}</td>
+							<td>{{ check.error|default:check.reason }}</td>
+							<td>{% if check.broken_at_check %}Yes{% else %}No{% endif %}</td>
+							<td>{{ check.checked_at|date:"g:i A" }}</td>
+						</tr>
+					{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		{% else %}<p class="empty">No additional checks to show.</p>{% endif %}
 	</section>
 </main>
 </body>

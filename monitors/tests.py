@@ -399,7 +399,7 @@ class CheckAgenciesCommandTests(TestCase):
 		_update_bid_status,
 	):
 		load_bids_mock.return_value = [
-			self.make_bid(1, 'no-bids.example', broken=False),
+			self.make_bid(1, 'no-bids.example', broken=True),
 		]
 		check_agency_mock.return_value = CheckResult('NO_BID', 'no_bids_phrase')
 
@@ -511,6 +511,23 @@ class SourceBidIntegrationTests(TransactionTestCase):
 		self.assertIsNone(status_record.last_error)
 		self.assertTrue(check.broken_at_check)
 		self.assertEqual(check.status, 'ACTIVE')
+
+	@patch('monitors.management.commands.check_agencies.check_agency')
+	def test_command_skips_bids_that_are_not_broken(self, check_agency):
+		BidSource.objects.all().delete()
+		BidSource.objects.create(
+			ecgains='not-broken-test',
+			agency_name='not-broken.example',
+			agency_url='https://not-broken.example/Bids.aspx',
+			broken=False,
+		)
+
+		call_command('check_agencies', verbosity=0)
+
+		check_agency.assert_not_called()
+		run = MonitorRun.objects.get()
+		self.assertEqual(run.total_agencies, 0)
+		self.assertEqual(run.checks.count(), 0)
 
 
 class DailyReportViewTests(TestCase):

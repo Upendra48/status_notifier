@@ -29,7 +29,9 @@ class StatusUpdates(TypedDict):
 
 def load_bids() -> list[BidSource]:
 	bids = list(
-		BidSource.objects.using(DEFAULT_DB_ALIAS).order_by('id')
+		BidSource.objects.using(DEFAULT_DB_ALIAS)
+		.filter(broken=True)
+		.order_by('id')
 	)
 	seen_ecgains: set[str] = set()
 	for bid in bids:
@@ -103,7 +105,7 @@ def update_bid_status(bid: BidSource, result: CheckResult) -> None:
 
 
 class Command(BaseCommand):
-	help = 'Check the bids listed in the local bids table and record their results.'
+	help = 'Check broken bids listed in the local bids table and record their results.'
 
 	def handle(self, *args, **options):
 		bids = load_bids()
